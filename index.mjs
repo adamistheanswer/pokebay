@@ -9,7 +9,7 @@ dotenv.config();
 const EBAY_BEARER_TOKEN = process.env.EBAY_BEARER_TOKEN;
 const POKEMON_TCG_API_KEY = process.env.POKEMON_TCG_API_KEY;
 
-const MAX_LISTINGS_PER_CARD = 50;
+const MAX_LISTINGS_PER_CARD = 200;
 
 const EBAY_BROWSE_SEARCH_ENDPOINT =
   "https://api.ebay.com/buy/browse/v1/item_summary/search";
@@ -21,11 +21,22 @@ const setsToFetch = [
       1, 14, 28, 30, 32, 41, 67, 82, 89, 105, 110, 128, 134, 136, 142,
     ],
   },
+  {
+    setId: "sv5", // Temporal Forces Set
+    cardNumbers: [
+      3, 4, 9, 10, 11, 12, 18, 19, 22, 25, 27, 33, 34, 35, 36, 38, 39, 40, 44,
+      45, 46, 47, 49, 50, 51, 54, 60, 61, 63, 64, 65, 67, 74, 78, 80, 81, 82,
+      83, 84, 87, 91, 92, 96, 99, 100, 101,
+    ],
+  },
 ];
 
-async function getCardDataBySetAndNumber(setId, cardNumber) {
-  console.log(`Getting card ${cardNumber} data from set ${setId}`);
-  const url = `https://api.pokemontcg.io/v2/cards?q=set.id:${setId} number:${cardNumber}`;
+async function getCardDataBySet(setId, cardNumbers) {
+  console.log(`Fetching multiple cards from set ${setId}`);
+
+  // Construct the query for multiple cards using OR
+  const numberQueries = cardNumbers.map((num) => `number:${num}`).join(" OR ");
+  const url = `https://api.pokemontcg.io/v2/cards?q=set.id:${setId} (${numberQueries})`;
 
   const resp = await fetch(url, {
     headers: {
@@ -41,69 +52,60 @@ async function getCardDataBySetAndNumber(setId, cardNumber) {
 
   const data = await resp.json();
   if (!data?.data || !data.data.length) {
-    console.warn(`No results for setId=${setId}, cardNumber=${cardNumber}`);
-    return null;
+    console.warn(`No results for setId=${setId}`);
+    return [];
   }
 
-  // Grab the first card
-  const card = data.data[0];
-  const originalNumber = card.number; // e.g. "160", "GG13/GG70", "210a"
-  const setTotal = card.set.printedTotal ?? card.set.total; // e.g. 145
+  return data.data.map((card) => {
+    const originalNumber = card.number;
+    const setTotal = card.set.printedTotal ?? card.set.total;
 
-  // Attempt to parse the originalNumber as an integer
-  let parsedNum = parseInt(originalNumber, 10); // NaN if cannot parse
-  let formattedNumber;
+    let parsedNum = parseInt(originalNumber, 10);
+    let formattedNumber =
+      !isNaN(parsedNum) && setTotal
+        ? `${String(parsedNum).padStart(3, "0")}/${setTotal}`
+        : originalNumber;
 
-  if (!isNaN(parsedNum) && setTotal) {
-    // If successfully parsed, build something like "160/145" or zero-pad "001/145"
-    const padded = String(parsedNum).padStart(3, "0"); // => "160" or "001"
-    formattedNumber = `${padded}/${setTotal}`;
-  } else {
-    // If parse fails (NaN) or setTotal is missing, fall back to the original string
-    formattedNumber = originalNumber;
-  }
-
-  return {
-    name: card.name, // e.g. "Charizard"
-    setName: card.set.name, // e.g. "Crown Zenith"
-    cardNumber: formattedNumber, // e.g. "160/145" or "GG13/GG70"
-  };
+    return {
+      name: card.name,
+      setName: card.set.name,
+      cardNumber: formattedNumber,
+    };
+  });
 }
 
 async function buildMissingCards(setsToFetch) {
   const results = [];
 
   for (const { setId, cardNumbers } of setsToFetch) {
-    for (const number of cardNumbers) {
-      console.log("");
-      const cardInfo = await getCardDataBySetAndNumber(setId, number);
-      if (cardInfo) {
-        results.push(cardInfo);
-      }
-    }
+    console.log(`Fetching set: ${setId}`);
+    const cards = await getCardDataBySet(setId, cardNumbers);
+    results.push(...cards);
   }
+
   return results;
 }
-
-// const MISSING_CARDS = [
-//   { name: "Venusaur", setName: "Stellar Crown", cardNumber: "001/142" },
-//   { name: "Lucario", setName: "Stellar Crown", cardNumber: "082/142" },
-// ];
 
 const MISSING_CARDS = await buildMissingCards(setsToFetch);
 
 function buildSearchQuery(cardData) {
-  // e.g. "Venusaur 001/142 Stellar Crown -lot -set -bundle"
-  console.log(
-    `Searching Ebay UK: ${cardData.name} ${cardData.cardNumber} ${cardData.setName}`
-  );
-  return `${cardData.name} ${cardData.cardNumber} ${cardData.setName} -lot -set -bundle`;
+  return `${cardData.name} ${cardData.cardNumber} ${cardData.setName} -lot -set -bundle -japanese -korean -chinese`;
 }
 
+const ebayCache = new Map();
+
 async function fetchSingleCardListings(cardData, limit = 10) {
-  const query = encodeURIComponent(buildSearchQuery(cardData));
+  const query = buildSearchQuery(cardData);
+
+  // Check if we've already fetched this query
+  if (ebayCache.has(query)) {
+    console.log(`Using cached results for ${query}`);
+    return ebayCache.get(query);
+  }
+
+  const encodedQuery = encodeURIComponent(query);
   const url =
-    `${EBAY_BROWSE_SEARCH_ENDPOINT}?q=${query}&limit=${limit}` +
+    `${EBAY_BROWSE_SEARCH_ENDPOINT}?q=${encodedQuery}&limit=${limit}` +
     `&filter=buyingOptions:{FIXED_PRICE},itemLocationCountry:GB`;
 
   const headers = {
@@ -115,110 +117,86 @@ async function fetchSingleCardListings(cardData, limit = 10) {
   try {
     const response = await fetch(url, { headers });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Error ${response.status} from eBay: ${body}`);
+      throw new Error(
+        `Error ${response.status} from eBay: ${await response.text()}`
+      );
     }
 
     const data = await response.json();
     const items = data.itemSummaries || [];
 
-    return items.map((item) => {
-      const listingId = item.itemId || item.epid || item.title;
-      const seller = item.seller?.username || "UnknownSeller";
-      const priceValue = parseFloat(item.price?.value || "0") || 0;
-      let shippingCost = 0;
+    const listings = items.map((item) => ({
+      listingId: item.itemId || item.epid || item.title,
+      card: cardData.name,
+      price: parseFloat(item.price?.value || "0") || 0,
+      shipping: parseFloat(
+        item.shippingOptions?.[0]?.shippingCost?.value || "0"
+      ),
+      seller: item.seller?.username || "UnknownSeller",
+      itemWebUrl: item.itemWebUrl || "",
+    }));
 
-      if (Array.isArray(item.shippingOptions) && item.shippingOptions.length) {
-        const shippingCostObj = item.shippingOptions[0]?.shippingCost;
-        if (shippingCostObj?.value) {
-          shippingCost = parseFloat(shippingCostObj.value);
-        }
-      }
+    // Cache the result
+    ebayCache.set(query, listings);
 
-      return {
-        listingId,
-        card: cardData.name,
-        price: priceValue,
-        shipping: shippingCost,
-        seller,
-        itemWebUrl: item.itemWebUrl || "",
-      };
-    });
+    return listings;
   } catch (error) {
-    // Fixed the reference here:
     console.error(
-      `Error fetching listings for card "${cardData.name}": ${error.message}`
+      `Error fetching listings for "${cardData.name}":`,
+      error.message
     );
     return [];
   }
 }
 
 async function fetchAllSingleCardListings(cards) {
-  let allListings = [];
-  for (const card of cards) {
-    const listings = await fetchSingleCardListings(card, MAX_LISTINGS_PER_CARD);
+  console.log(`Fetching listings for ${cards.length} cards in parallel...`);
 
-    allListings = allListings.concat(listings);
-  }
-  return allListings;
+  const listingsArray = await Promise.all(
+    cards.map((card) => fetchSingleCardListings(card, MAX_LISTINGS_PER_CARD))
+  );
+
+  return listingsArray.flat();
 }
 
 function buildIlpModel(listings, missingCards) {
   console.log("Building ILP Model");
-  const sellers = [...new Set(listings.map((l) => l.seller))];
 
+  const sellers = new Set();
   const listingVarIndex = {};
   const sellerVarIndex = {};
+  const objectiveVars = [];
+  const subjectToConstraints = [];
+  const binaryVarNames = [];
 
-  const objectiveVars = []; // For objective function
-  const subjectToConstraints = []; // For constraints
-  const binaryVarNames = []; // For y & x variables
-
-  // 1) x_l variables => For each listing
   listings.forEach((listing) => {
     const xName = `x_${listing.listingId}`;
     listingVarIndex[listing.listingId] = xName;
-
-    // We want to minimize total cost: listing.price in the objective
-    objectiveVars.push({ name: xName, coef: listing.price });
-
-    // Mark xName as binary
     binaryVarNames.push(xName);
+    objectiveVars.push({ name: xName, coef: listing.price });
+    sellers.add(listing.seller);
   });
 
-  // 2) y_s variables => For each seller
-  sellers.forEach((seller) => {
+  [...sellers].forEach((seller) => {
     const yName = `y_${seller}`;
     sellerVarIndex[seller] = yName;
-
-    const sellerListings = listings.filter((l) => l.seller === seller);
-    const maxShipping = Math.max(...sellerListings.map((l) => l.shipping), 0);
-
-    // Add one-time shipping to the objective:
-    objectiveVars.push({ name: yName, coef: maxShipping });
-
-    // Mark yName as binary
     binaryVarNames.push(yName);
   });
 
-  // 3) Constraints
-  // (a) Exactly 1 listing per card
   missingCards.forEach((cardObj) => {
     const relevantListings = listings.filter((l) => l.card === cardObj.name);
-    const constraintVars = relevantListings.map((listing) => ({
-      name: listingVarIndex[listing.listingId], // the variable name, e.g. x_123
-      coef: 1,
-    }));
+    if (relevantListings.length === 0) return;
 
     subjectToConstraints.push({
       name: `exactly_one_${cardObj.name}`,
-      vars: constraintVars,
-      // exactly one => bnds: type GLP_FX with lb=1, ub=1
+      vars: relevantListings.map((listing) => ({
+        name: listingVarIndex[listing.listingId],
+        coef: 1,
+      })),
       bnds: { type: solver.GLP_FX, lb: 1, ub: 1 },
     });
   });
 
-  // (b) Seller activation: x_l <= y_s  =>  x_l - y_s <= 0
   listings.forEach((listing) => {
     const xName = listingVarIndex[listing.listingId];
     const yName = sellerVarIndex[listing.seller];
@@ -229,12 +207,10 @@ function buildIlpModel(listings, missingCards) {
         { name: xName, coef: 1 },
         { name: yName, coef: -1 },
       ],
-      // x_l - y_s <= 0 => type = GLP_UP, ub = 0
-      bnds: { type: solver.GLP_UP, ub: 0, lb: 0 },
+      bnds: { type: solver.GLP_UP, ub: 0 },
     });
   });
 
-  // Now build the final model object:
   return {
     name: "CheapestPokemonBasket",
     objective: {
