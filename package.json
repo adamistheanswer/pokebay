@@ -1,0 +1,16 @@
+{
+  "name": "pokebay",
+  "version": "1.0.0",
+  "description": "Find cheapest single-card listings on eBay using ILP for combined shipping.",
+  "main": "index.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "glpk.js": "4.0.2",
+    "javascript-lp-solver": "^0.4.24",
+    "node-fetch": "^3.3.0"
+  }
+}
