@@ -11,6 +11,7 @@
     "dotenv": "^16.3.1",
     "glpk.js": "4.0.2",
     "javascript-lp-solver": "^0.4.24",
-    "node-fetch": "^3.3.0"
+    "node-fetch": "^3.3.0",
+    "winston": "^3.17.0"
   }
 }
