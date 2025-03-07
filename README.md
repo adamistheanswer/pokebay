@@ -10,6 +10,8 @@
 
 Pokebay is an application that finds the cheapest Pokemon single-card listings on eBay using Integer Linear Programming (ILP) for combined shipping optimization.
 
+![Pokebay](./pokebay.gif)
+
 ## Features
 
 - Fetches card data from the Pokemon TCG API.
